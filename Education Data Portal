@@ -1,0 +1,111 @@
+--======================================================================Question 2
+--python code in airflow to fetch API data
+--================================================================================
+from airflow import dag, task
+from airflow.operators.python_operator import PythonOperator
+from datetime import datetime
+import requests
+import boto3
+import json
+
+default_args = {
+    'owner': 'airflow',
+    'depends_on_past': False,
+    'start_date': datetime(2024, 8, 29),
+    'retries': 1,
+}
+
+dag = DAG(
+    'api_to_s3',
+    default_args=default_args,
+    description='Call education data urban api and load the result into S3',
+    schedule_interval='@daily',
+)
+
+def fetch_api_data(**kwargs):
+    api_url = 'https://educationdata.urban.org/api/v1/schools/ccd/enrollment/2021/grade-pk/'
+    response = requests.get(api_url)
+    
+    if response.status_code != 200:
+        raise ValueError(f"Failed to fetch api data: {response.status_code}")
+    return response.json()
+
+def upload_file_to_s3(data, **kwargs):
+    s3 = boto3.client('s3')
+    data_txt = json.dumps(data)
+    s3_bucket_name = 's3://mosesodjoji-raw-landing/ccd_enrollment/'
+    file_name = '2021_ccd_enrollment.json'
+    s3.put_object(Bucket=s3_bucket_name, Key=file_name, Body=data_txt)
+
+def api_to_s3(**kwargs):
+    data = fetch_api_data(**kwargs)
+    upload_file_to_s3(data, **kwargs)
+
+fetch_data_task = PythonOperator(
+    task_id='fetch_data',
+    python_callable=fetch_api_data,
+    provide_context=True,
+    dag=dag,
+)
+
+upload_data_task = PythonOperator(
+    task_id='upload_data_task',
+    python_callable=upload_file_to_s3,
+    provide_context=True,
+    dag=dag,
+)
+
+# Define the DAG workflow
+fetch_data_task >> upload_data_task
+
+
+
+
+--======================================================================Question 2
+--in 2021, which 10 states had the highest number of children enrolled in pre-K
+--================================================================================
+SELECT
+    sum(rslts.enrollment) as total_enrollment,
+    rslts.fips as state_code
+FROM
+  grade_pk_ccd_enrollment,
+  UNNEST(grade_pk_ccd_enrollment.results) as t(rslts)
+WHERE rslts.year = 2021
+AND rslts.grade = -1
+AND rslts.enrollment NOT IN (0, -1, -2, -3)
+GROUP BY rslts.fips
+ORDER BY total_enrollment DESC
+LIMIT 10;
+
+
+
+
+
+--======================================================================Question 3
+
+--================================================================================
+    (a) Tools and technology used: 
+          - I used apache airflow for checking, pulling external API and for orchestration.
+          - I used AWS S3 for storing the data from API .
+          - I used AWS glue crawler, created a database and table .
+          - I used AWS SQS queue to trigger crawler when ever there is a put event in the s3 location I store the files.
+          - I uses AWS Athena to query the semi-structure data.
+          - I used AWS roles to assign permissions to services.
+
+    (b) Rationale to my approach:
+          - Orchestration:
+              	Initially, I considered using a Lambda function to retrieve data from the API endpoint. However, I realized that if the payload size increases or if there are significant changes, we might need to chain multiple Lambdas 		due to the 15-minute execution time limit or complexity issues. While it is possible to chain multiple Lambdas, this approach can quickly become cumbersome. If we are certain that the task will always be simple and 			short-lived, then Lambda is the ideal choice. However, if there is a possibility of increased complexity with the endpoint in the future, then Airflow would be more appropriate, and it is also cost-effective.
+
+          - Storage:
+              I chose s3 for storage because it can scale as data grows and its also cost effective.
+
+          - Processing:
+              	I chose to use Athena because it's a serverless analytics query engine, which means I don't have to manage any infrastructure. I can simply crawl the data in S3 to define the schema and run queries directly. Athena also 		scales with growing data needs. Additionally, I use an SQS standard queue to trigger the crawler incrementally whenever there's a new put request in the S3 location, ensuring that my schema stays up-to-date with the 		latest version of the data
+
+    (c) Things I could have done better if I had more time:
+          - I want to classify the data for PII purposes and apply masking where necessary.
+          - I plan to further transform the data, such as deriving a column for state names from the FIPS codes (e.g., 1 = Alabama).
+          - I intend to implement data quality checks, including validating accepted values, ensuring uniqueness, applying constraints, and maintaining referential integrity.
+          - I will establish logging and alerting mechanisms to handle any errors.
+	  - I will also make the data available in data warehouse (Redshift).
+          - Additionally, I aim to elevate the process by applying DataOps practices, such as setting up a CI/CD pipeline and adopting agile engineering methodologies.
